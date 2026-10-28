@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+<title>ArmCar Controller</title>
+<style>
+  body {
+    margin: 0;
+    padding: 12px;
+    background: #0b1220;
+    color: #e6edf7;
+    font-family: sans-serif;
+    text-align: center;
+  }
+  button {
+    background: #1c2a44;
+    color: #e6edf7;
+    border: 1px solid #33486f;
+    border-radius: 10px;
+    padding: 10px 14px;
+    font-size: 15px;
+    margin: 4px;
+    cursor: pointer;
+    touch-action: manipulation;
+  }
+  button:active, button.on {
+    background: #2e7d4f;
+    border-color: #4ade80;
+  }
+  .row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 8px auto;
+    max-width: 320px;
+  }
+  .row label {
+    width: 85px;
+    text-align: left;
+    font-size: 14px;
+  }
+  .row input {
+    flex: 1;
+    min-width: 0;
+  }
+  #pad {
+    display: grid;
+    grid-template-columns: repeat(3, 76px);
+    gap: 8px;
+    justify-content: center;
+    margin: 12px 0;
+  }
+  #pad button {
+    height: 60px;
+    font-size: 24px;
+    touch-action: none;
+  }
+  #face {
+    height: 80px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    gap: 30px;
+    background: #000;
+    border-radius: 14px;
+    margin: 10px auto;
+    max-width: 320px;
+    transition: 0.3s;
+  }
+  .eye {
+    width: 25px;
+    height: 40px;
+    border-radius: 15px;
+    background: #6cf;
+    transition: 0.3s;
+  }
+  .card {
+    border: 1px solid #33486f;
+    border-radius: 12px;
+    padding: 12px;
+    margin: 12px auto;
+    max-width: 340px;
+    background: #101a2e;
+  }
+  input[type=text] {
+    width: 90%;
+    padding: 8px;
+    border-radius: 6px;
+    border: 1px solid #33486f;
+    background: #0b1220;
+    color: #fff;
+    margin-bottom: 8px;
+  }
+  #liveCam {
+    width: 100%;
+    max-width: 320px;
+    height: auto;
+    border-radius: 8px;
+    display: none;
+    margin-top: 8px;
+    border: 2px solid #33486f;
+  }
+  #status {
+    font-size: 14px;
+    color: #38bdf8;
+    margin-bottom: 4px;
+  }
+  #heard {
+    font-size: 13px;
+    color: #a5f3fc;
+    min-height: 20px;
+    margin: 4px 0;
+  }
+</style>
+</head>
+<body>
+
+<h3>🤖 ArmCar Controller</h3>
+<div id="status">Connecting...</div>
+
+<!-- रोबोट का डिजिटल चेहरा (Eyes) -->
+<div id="face">
+  <div class="eye"></div>
+  <div class="eye"></div>
+</div>
+
+<div id="heard"></div>
+
+<!-- Live Camera Window -->
+<div class="card">
+  <h3>📹 Live Robot Camera</h3>
+  <input type="text" id="camUrl" value="http://192.168.4.2:8080/video" placeholder="Camera Stream URL Dalein">
+  <br>
+  <button id="bCam" onclick="toggleCam()">Camera On / Off</button>
+  <br>
+  <img id="liveCam" src="" alt="Live Video Feed">
+</div>
+
+<!-- BLE Connect Button -->
+<button id="bBle">Bluetooth (BLE) Connect</button>
+
+<!-- Driving D-Pad -->
+<div id="pad">
+  <span></span><button data-c="F">▲</button><span></span>
+  <button data-c="L">◀</button><button data-c="S">■</button><button data-c="R">▶</button>
+  <span></span><button data-c="B">▼</button><span></span>
+</div>
+
+<!-- Car Speed Slider -->
+<div class="row">
+  <label>Speed</label>
+  <input type="range" id="spd" min="80" max="255" value="180">
+</div>
+
+<!-- Robotic Arm Sliders -->
+<div class="card">
+  <h3>🦾 Arm Control</h3>
+  <div id="arm"></div>
+  <div style="margin-top:10px;">
+    <button onclick="cmd('G1')">Grip Open</button>
+    <button onclick="cmd('G0')">Grip Close</button>
+    <button onclick="cmd('HOME')">Home</button>
+    <button onclick="cmd('PICK')">Pick</button>
+    <button onclick="cmd('DROP')">Drop</button>
+  </div>
+</div>
+
+<!-- Smart Control Modes -->
+<div class="card">
+  <h3>⚡ Smart Modes</h3>
+  <button id="tAuto">Auto Obstacle</button>
+  <button id="tVoice">Voice Control</button>
+  <button id="tTilt">Tilt (Gyro)</button>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const SERVICE = '6e400001-b5a3-f393-e0a9-e50e24dcca9e';
+const RXU     = '6e400002-b5a3-f393-e0a9-e50e24dcca9e';
+const TXU     = '6e400003-b5a3-f393-e0a9-e50e24dcca9e';
+
+const enc = new TextEncoder();
+const dec = new TextDecoder();
+
+let ws = null;
+let wsOpen = false;
+let bleDev = null;
+let bleRx = null;
+let autoOn = false;
+let voiceOn = false;
+let tiltOn = false;
+let rec = null;
+
+function setStatus(t) { $('status').textContent = t; }
+
+function face(c) {
+  $('face').style.background = c === 'alert' ? '#7f1d1d' : c === 'listen' ? '#14532d' : '#000';
+}
+
+function raw(c) {
+  if (bleRx) {
+    try { bleRx.writeValue(enc.encode(c)); } catch(e){}
+  } else if (wsOpen && ws && ws.readyState === WebSocket.OPEN) {
+    ws.send(c);
+  }
+}
+
+function cmd(c) {
+  raw(c);
+  if (c === 'PICK' || c === 'DROP') face('listen');
+}
+
+// ---------- Wi-Fi WebSocket ----------
+function connectWS() {
+  if (location.protocol !== 'http:') return;
+  ws = new WebSocket('ws://' + location.hostname + ':81/');
+  ws.onopen = () => {
+    wsOpen = true;
+    setStatus('Connected (WiFi)');
+    raw('?');
+    raw('V' + $('spd').value);
+  };
+  ws.onmessage = e => onMsg(String(e.data));
+  ws.onclose = () => {
+    wsOpen = false;
+    if (!bleRx) setStatus('WiFi disconnected');
+    setTimeout(connectWS, 2000);
+  };
+  ws.onerror = () => { wsOpen = false; };
+}
+
+if (location.protocol === 'http:') connectWS();
+else setStatus('BLE se connect karein');
+
+// ---------- BLE Connection ----------
+$('bBle').onclick = async () => {
+  if (bleDev && bleDev.gatt.connected) { bleDev.gatt.disconnect(); return; }
+  if (!navigator.bluetooth) { alert('Chrome browser mein Web Bluetooth zaroori hai.'); return; }
+  try {
+    bleDev = await navigator.bluetooth.requestDevice({
+      filters: [{ name: 'ArmCar-ESP32' }],
+      optionalServices: [SERVICE]
+    });
+    bleDev.addEventListener('gattserverdisconnected', () => {
+      bleRx = null;
+      setStatus('BLE disconnected');
+      $('bBle').textContent = 'Bluetooth (BLE) Connect';
+    });
+    const server = await bleDev.gatt.connect();
+    const service = await server.getPrimaryService(SERVICE);
+    bleRx = await service.getCharacteristic(RXU);
+    const tx = await service.getCharacteristic(TXU);
+    await tx.startNotifications();
+    tx.addEventListener('characteristicvaluechanged', e => onMsg(dec.decode(e.target.value)));
+    $('bBle').textContent = 'Disconnect BLE';
+    setStatus('Connected (BLE)');
+    raw('?');
+    raw('V' + $('spd').value);
+  } catch (e) {
+    setStatus('BLE error: ' + e.message);
+  }
+};
+
+function onMsg(m) {
+  m = m.trim();
+  if (m === 'OBS') { face('alert'); setTimeout(() => face(''), 800); }
+  else if (m === 'ARM:DONE') face('');
+  else if (m.startsWith('IR:')) $('heard').textContent = 'IR: ' + m.substring(3);
+}
+
+// Heartbeat
+setInterval(() => { raw('H'); }, 500);
+
+// ---------- D-Pad Touch Events ----------
+document.querySelectorAll('#pad button').forEach(button => {
+  const c = button.dataset.c;
+  button.addEventListener('pointerdown', e => { e.preventDefault(); raw(c); });
+  const stop = () => { if (c !== 'S') raw('S'); };
+  button.addEventListener('pointerup', stop);
+  button.addEventListener('pointerleave', stop);
+  button.addEventListener('pointercancel', stop);
+});
+
+// Speed
+$('spd').addEventListener('input', e => raw('V' + e.target.value));
+
+// ---------- Arm Sliders (PCA9685 Channels 0-4) ----------
+['Base','Shoulder','Elbow','Wrist','Gripper'].forEach((name, i) => {
+  const row = document.createElement('div');
+  row.className = 'row';
+  row.innerHTML = `<label>${name}</label><input type="range" min="0" max="180" value="90">`;
+  row.querySelector('input').addEventListener('input', e => raw(`V${i}:${e.target.value}`));
+  $('arm').appendChild(row);
+});
+
+// Auto Mode
+$('tAuto').onclick = () => {
+  autoOn = !autoOn;
+  $('tAuto').classList.toggle('on', autoOn);
+  raw(autoOn ? 'AUTO:1' : 'AUTO:0');
+};
+
+// ---------- Live Camera Stream Toggle ----------
+function toggleCam() {
+  const img = $('liveCam');
+  const url = $('camUrl').value.trim();
+  if (img.style.display === 'none' || img.style.display === '') {
+    img.src = url;
+    img.style.display = 'block';
+    $('bCam').classList.add('on');
+  } else {
+    img.src = '';
+    img.style.display = 'none';
+    $('bCam').classList.remove('on');
+  }
+}
+
+// ---------- Voice Control (Hindi/English) ----------
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+function speak(t) {
+  if (!window.speechSynthesis) return;
+  const u = new SpeechSynthesisUtterance(t);
+  u.lang = 'hi-IN';
+  window.speechSynthesis.speak(u);
+}
+
+function handleVoice(t) {
+  $('heard').textContent = 'Sunai diya: ' + t;
+  let c = null;
+  if (/stop|ruk|रुक|रोक/i.test(t)) c = 'S';
+  else if (/aage|forward|आगे/i.test(t)) c = 'F';
+  else if (/peeche|back|पीछे/i.test(t)) c = 'B';
+  else if (/left|baen|बाएं/i.test(t)) c = 'L';
+  else if (/right|daen|दाएं/i.test(t)) c = 'R';
+  else if (/pakad|pick|पकड़/i.test(t)) c = 'PICK';
+  else if (/chhod|drop|छोड़/i.test(t)) c = 'DROP';
+  else if (/home|ghar|घर/i.test(t)) c = 'HOME';
+  else if (/khol|open|खोल/i.test(t)) c = 'G1';
+  else if (/band|close|बंद/i.test(t)) c = 'G0';
+
+  if (!c) return;
+  cmd(c);
+  if ('FBLR'.includes(c) && c.length === 1) setTimeout(() => raw('S'), 1500);
+  speak('Theek hai');
+}
+
+$('tVoice').onclick = () => {
+  if (!SR) { alert('Android Chrome use karein'); return; }
+  voiceOn = !voiceOn;
+  $('tVoice').classList.toggle('on', voiceOn);
+  if (voiceOn) {
+    rec = new SR();
+    rec.lang = 'hi-IN';
+    rec.continuous = true;
+    rec.interimResults = false;
+    rec.onresult = e => handleVoice(e.results[e.results.length - 1][0].transcript.toLowerCase());
+    rec.onend = () => { if (voiceOn && rec) try { rec.start(); } catch (e) {} };
+    rec.onerror = e => { $('heard').textContent = 'Voice error: ' + e.error; };
+    rec.start();
+    face('listen');
+  } else {
+    if (rec) rec.stop();
+    rec = null;
+    raw('S');
+    face('');
+  }
+};
+
+// ---------- Tilt / Gyro Control ----------
+let b0 = null, g0 = 0, lastT = 'S';
+function onTilt(e) {
+  if (e.beta == null || e.gamma == null) return;
+  if (b0 === null) { b0 = e.beta; g0 = e.gamma; return; }
+  const dy = e.beta - b0, dx = e.gamma - g0;
+  let c = 'S';
+  if (dy < -20) c = 'F';
+  else if (dy > 20) c = 'B';
+  else if (dx < -20) c = 'L';
+  else if (dx > 20) c = 'R';
+  if (c !== lastT) { lastT = c; raw(c); }
+}
+
+$('tTilt').onclick = async () => {
+  if (!('DeviceOrientationEvent' in window)) { alert('Orientation sensor nahi mila'); return; }
+  tiltOn = !tiltOn;
+  $('tTilt').classList.toggle('on', tiltOn);
+  if (tiltOn) {
+    b0 = null; lastT = 'S';
+    window.addEventListener('deviceorientation', onTilt);
+  } else {
+    window.removeEventListener('deviceorientation', onTilt);
+    raw('S');
+  }
+};
+</script>
+</body>
+    </html>
